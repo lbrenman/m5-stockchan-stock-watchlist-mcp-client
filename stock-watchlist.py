@@ -6,7 +6,8 @@
 # StackChan v2.5.3. Uses no StackChan-body hardware, so it should also run on
 # a plain CoreS3.
 #
-#   Screen 1: Watchlist - quotes for every symbol, refreshed every 30 s
+#   Screen 1: Watchlist - quotes for every symbol, refreshed every 60 s
+#                         (tap the On/Off toggle to pause auto refresh)
 #   Screen 2: Pick      - tap preset symbol buttons (QQQ + blue chips) to
 #                         add / remove them; highlighted = in the watchlist
 #
@@ -53,7 +54,8 @@ TOOL_NAMES = {
 }
 
 # --- Watchlist screen ---
-REFRESH_MS = 30 * 1000      # quote refresh while the Watchlist screen is visible
+AUTO_REFRESH = True         # auto refresh at startup (the On/Off toggle changes it)
+REFRESH_MS = 60 * 1000      # quote refresh while the Watchlist screen is visible
 RETRY_MS = 15 * 1000        # retry delay after a failed request
 PAGE_MS = 5000              # page rotation when there are more rows than fit
 ROWS_PER_PAGE = 7
@@ -103,6 +105,8 @@ SYM_ON = 0x2E7D32           # symbol button: in the watchlist
 SYM_PENDING = 0xB26A00      # symbol button: add/remove in progress
 TAB_OFF = 0x1A2438
 TAB_ON = 0x1E88E5
+TOGGLE_ON = 0x2E7D32        # refresh toggle: auto refresh on
+TOGGLE_OFF = 0x6D4C41       # refresh toggle: paused
 
 
 # =============================================================================
@@ -197,6 +201,32 @@ def fixed_label(parent, text, x, y, w, color, font, align=None):
 
 def set_color(lbl, color):
     lbl.set_style_text_color(lv.color_hex(color), 0)
+
+
+def set_btn_text(btn, text):
+    """Change a button's caption. M5Button has set_btn_text(); fall back to
+    the button's first child (its label) on builds without it."""
+    fn = getattr(btn, "set_btn_text", None)
+    if fn:
+        try:
+            fn(text)
+            return
+        except Exception:
+            pass
+    try:
+        btn.get_child(0).set_text(text)
+    except Exception as e:
+        print("set_btn_text:", e)
+
+
+def fmt_age(ms):
+    """Milliseconds -> '12s' / '5m' / '2h'."""
+    s = ms // 1000
+    if s < 60:
+        return "%ds" % s
+    if s < 3600:
+        return "%dm" % (s // 60)
+    return "%dh" % (s // 3600)
 
 
 def show(obj, visible):
@@ -961,6 +991,9 @@ COL_SYM = (12, 80)          # x, width
 COL_PRICE = (92, 90)
 COL_CHG = (186, 62)
 COL_PCT = (250, 62)
+TOGGLE_X = 100              # auto-refresh toggle, right of the title
+TOGGLE_W = 64
+PAUSED_MSG = "Auto refresh is off.\nTap Off to load quotes."
 
 
 def fmt_price(p):
@@ -980,8 +1013,16 @@ class WatchlistScreen(Screen):
 
     def build(self, page):
         label(page, "Watchlist", 10, 4, ACCENT, lv.font_montserrat_18)
-        self.status = fixed_label(page, "", 130, 8, 180, TEXT_SOFT,
-                                  lv.font_montserrat_12, lv.TEXT_ALIGN.RIGHT)
+        # Auto-refresh On/Off toggle. SHORT_CLICKED (not PRESSED) so a swipe
+        # that starts on it doesn't flip it. The callback only changes state;
+        # any refresh it asks for runs from tick() in the main loop.
+        self.auto = AUTO_REFRESH
+        self.toggle_btn = button(page, "", TOGGLE_X, 3, TOGGLE_W, 24, TOGGLE_ON,
+                                 lv.font_montserrat_14, self.toggle_refresh,
+                                 lv.EVENT.SHORT_CLICKED)
+        status_x = TOGGLE_X + TOGGLE_W + 4
+        self.status = fixed_label(page, "", status_x, 8, SCREEN_W - 8 - status_x,
+                                  TEXT_SOFT, lv.font_montserrat_12, lv.TEXT_ALIGN.RIGHT)
 
         # column headers
         right = lv.TEXT_ALIGN.RIGHT
@@ -1005,7 +1046,8 @@ class WatchlistScreen(Screen):
             pct = fixed_label(page, "", COL_PCT[0], y + 2, COL_PCT[1], TEXT_SOFT, f14, right)
             self.rows.append((stripe, sym, price, chg, pct))
 
-        self.msg = fixed_label(page, "Loading...", 10, 110, 300, TEXT_SOFT,
+        self.msg = fixed_label(page, "Loading..." if self.auto else PAUSED_MSG,
+                               10, 110, 300, TEXT_SOFT,
                                lv.font_montserrat_16, lv.TEXT_ALIGN.CENTER)
 
         self.items = []
@@ -1014,11 +1056,15 @@ class WatchlistScreen(Screen):
         self.page_i = 0
         self.next_fetch = time.ticks_ms()
         self.last_flip = time.ticks_ms()
+        self.last_ok = None         # ticks_ms of the last successful refresh
         self.last_status = None
+        self.style_toggle()
 
     # --- lifecycle -------------------------------------------------------
     def on_enter(self):
         self.last_status = None
+        if not self.auto:
+            return                      # paused: no network until toggled on
         now = time.ticks_ms()
         due = time.ticks_diff(self.next_fetch, now) <= 0
         if due or self.svc.quotes_stale or not self.have_data:
@@ -1027,19 +1073,45 @@ class WatchlistScreen(Screen):
 
     def tick(self):
         now = time.ticks_ms()
-        # a pick finished in the background: refresh soon instead of in 30 s
-        if (self.svc.quotes_stale and not self.error
-                and time.ticks_diff(self.next_fetch, now) > 1500):
-            self.next_fetch = time.ticks_add(now, 1000)
-        if time.ticks_diff(now, self.next_fetch) >= 0:
-            self.refresh()
-            now = time.ticks_ms()
+        if self.auto:
+            # a pick finished in the background: refresh soon instead of in 60 s
+            if (self.svc.quotes_stale and not self.error
+                    and time.ticks_diff(self.next_fetch, now) > 1500):
+                self.next_fetch = time.ticks_add(now, 1000)
+            if time.ticks_diff(now, self.next_fetch) >= 0:
+                self.refresh()
+                now = time.ticks_ms()
         pages = self.page_count()
         if pages > 1 and time.ticks_diff(now, self.last_flip) >= PAGE_MS:
             self.page_i = (self.page_i + 1) % pages
             self.last_flip = now
             self.render()
         self.update_status(now)
+
+    # --- refresh toggle --------------------------------------------------
+    def toggle_refresh(self):
+        """LVGL callback: flip auto refresh. No network here; turning it on
+        schedules a refresh that tick() runs from the main loop."""
+        self.auto = not self.auto
+        if self.auto:
+            # refresh right away (short delay so the button repaints first)
+            self.next_fetch = time.ticks_add(time.ticks_ms(), 300)
+            if not self.have_data:
+                self.msg.set_text("Loading...")
+        elif not self.have_data:
+            self.msg.set_text(PAUSED_MSG)
+        print("Auto refresh", "on" if self.auto else "off")
+        self.style_toggle()
+        self.last_status = None         # redraw the status line
+
+    def style_toggle(self):
+        if self.auto:
+            set_btn_text(self.toggle_btn, lv.SYMBOL.REFRESH + " On")
+            color = TOGGLE_ON
+        else:
+            set_btn_text(self.toggle_btn, lv.SYMBOL.PAUSE + " Off")
+            color = TOGGLE_OFF
+        self.toggle_btn.set_style_bg_color(lv.color_hex(color), lv.PART.MAIN)
 
     # --- data ------------------------------------------------------------
     def refresh(self):
@@ -1063,6 +1135,7 @@ class WatchlistScreen(Screen):
             self.items = self.svc.rows(self.svc.get_quotes())
             self.have_data = True
             self.error = False
+            self.last_ok = time.ticks_ms()
             if self.page_i >= self.page_count():
                 self.page_i = 0
             self.msg.set_text("" if self.items else
@@ -1108,18 +1181,26 @@ class WatchlistScreen(Screen):
             set_color(pct, color)
 
     def update_status(self, now):
-        secs = max(0, time.ticks_diff(self.next_fetch, now) + 999) // 1000
         text = ""
         pages = self.page_count()
         if pages > 1:
-            text += "%d/%d   " % (self.page_i + 1, pages)
-        if self.error:
-            text += "Error, retry "
-        text += lv.SYMBOL.REFRESH + " %ds" % secs
+            text += "%d/%d  " % (self.page_i + 1, pages)
+        if not self.auto:
+            # paused: show how old the quotes on screen are
+            text += "Paused"
+            if self.last_ok is not None:
+                text += ", " + fmt_age(time.ticks_diff(now, self.last_ok)) + " old"
+            color = WARN_COLOR
+        else:
+            secs = max(0, time.ticks_diff(self.next_fetch, now) + 999) // 1000
+            if self.error:
+                text += "Retry "
+            text += lv.SYMBOL.REFRESH + " %ds" % secs
+            color = ERR_COLOR if self.error else TEXT_SOFT
         if text != self.last_status:
             self.last_status = text
             self.status.set_text(text)
-            set_color(self.status, ERR_COLOR if self.error else TEXT_SOFT)
+            set_color(self.status, color)
 
 
 # =============================================================================

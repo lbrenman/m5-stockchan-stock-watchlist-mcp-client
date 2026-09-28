@@ -6,7 +6,7 @@ Swipe **left** or **right** to switch screens. Dots at the bottom show which scr
 
 | # | Screen | What it does |
 |---|--------|--------------|
-| 1 | **Watchlist** | Symbol, price, change, and % change for every symbol, colored green or red. Refreshes every 30 s while visible. Symbols the server can't quote show "no quote". If there are more than 7 rows, pages rotate every 5 s. |
+| 1 | **Watchlist** | Symbol, price, change, and % change for every symbol, colored green or red. Refreshes every 60 s while visible. An **On/Off** toggle next to the title pauses and resumes auto refresh. Symbols the server can't quote show "no quote". If there are more than 7 rows, pages rotate every 5 s. |
 | 2 | **Pick** | Tabs of preset symbol buttons: **QQQ 1**, **QQQ 2**, **Blue Chip**, and **Other**. Tap a symbol to add it to the watchlist (the button turns green). Tap it again to remove it. **Other** lists watchlist symbols that aren't on the preset tabs, such as ones added from Claude, so you can remove them too. |
 
 ---
@@ -68,7 +68,8 @@ All settings are in the `CONFIG` block at the top of the file.
 | `HTTP_TIMEOUT_S` | `15` | Socket timeout per request. |
 | `DEBUG` | `True` | Prints every MCP request and the first 300 characters of each response to the console. |
 | `TOOL_NAMES` | FusionStockWatchListMCP names | Tool used for each role (`quotes`, `list`, `add`, `remove`). Set a role to `None` to discover it automatically instead. |
-| `REFRESH_MS` | 30 s | Quote refresh interval while the Watchlist screen is visible. |
+| `AUTO_REFRESH` | `True` | Whether auto refresh is on at startup. The **On/Off** toggle on the Watchlist screen changes it while the app runs; the choice isn't saved across restarts. |
+| `REFRESH_MS` | 60 s | Quote refresh interval while the Watchlist screen is visible and auto refresh is on. |
 | `RETRY_MS` | 15 s | Retry delay after a failed request. |
 | `PAGE_MS` | `5000` | Page rotation interval when the rows don't fit on one screen. |
 | `ROWS_PER_PAGE` | `7` | Rows per page. 7 is the most that fits above the page dots. |
@@ -164,8 +165,20 @@ The TLS connection is encrypted but the **server certificate isn't verified**, b
 
 ### Screens
 
-- The **Watchlist** screen calls `GetStockWatchList` every 30 s. On the first load it also calls `GetStockWatchListSymbols` once, so that symbols without a quote can be shown as "no quote" rows. The rows are 7 sets of labels created once; only their text and colors change.
-- The Watchlist screen normally refreshes every 30 s. After a change on the Pick screen, it refreshes within about a second instead.
+- The **Watchlist** screen calls `GetStockWatchList` every 60 s. On the first load it also calls `GetStockWatchListSymbols` once, so that symbols without a quote can be shown as "no quote" rows. The rows are 7 sets of labels created once; only their text and colors change.
+- The Watchlist screen normally refreshes every 60 s. After a change on the Pick screen, it refreshes within about a second instead.
+- The **On/Off** toggle next to the title pauses auto refresh (see below).
+
+### Auto-refresh toggle
+
+The button to the right of the "Watchlist" title shows **↻ On** (green) or **❚❚ Off** (brown). `AUTO_REFRESH` sets the state at startup.
+
+- **Off** stops every quote request from the Watchlist screen: the 60 s timer, the refresh when you swipe back to the screen, and the quick refresh after a change on the Pick screen. The quotes on screen stay as they are, and page rotation keeps running. The status line shows **Paused** and how old the quotes are (for example `Paused, 4m old`), in amber.
+- **On** refreshes right away (after about 0.3 s, so the button repaints first) and then goes back to the normal 60 s cycle. Toggling Off then On is therefore also a "refresh now" button.
+- If auto refresh is off at startup, no quotes are loaded until you tap the toggle; the screen says so.
+- The toggle only affects the Watchlist quotes. The Pick screen still loads the symbol list when you open it and still sends adds and removes.
+- Like the symbol buttons, the toggle fires on `SHORT_CLICKED`, so a swipe that starts on it doesn't flip it. Its callback only changes state; the refresh it asks for runs from `tick()` in the main loop.
+- While a request is running the loop is blocked, so a tap on the toggle during the ~1 s refresh can be missed. Tap again.
 - The **Pick** screen reloads the symbol list each time you open it, so changes made elsewhere (for example, from Claude through the same MCP server) show up.
 
 ### Pick screen
@@ -212,7 +225,10 @@ If something fails, the console prints a full traceback. Paste it here, starting
 | **A symbol on the Watchlist shows "no quote"** | The quote service doesn't know that symbol. Remove it from the **Other** tab, or from its preset tab. |
 | **"unrecognised ... reply (see console)"** | The server's reply format changed. Send me the console line. |
 | **UI freezes for a few seconds on first load** | The first load makes about 5 HTTPS requests, each with its own TLS handshake. Later refreshes make one. |
-| **Brief freeze every 30 s** | That's the quote refresh, which blocks the loop for about 1 s. It only happens while the Watchlist screen is visible. |
+| **Brief freeze every 60 s** | That's the quote refresh, which blocks the loop for about 1 s. It only happens while the Watchlist screen is visible. Tap the **On/Off** toggle to pause it. |
+| **Status line says "Paused" and quotes don't change** | Auto refresh is off. Tap the **Off** button next to the title. To start with it on, set `AUTO_REFRESH = True`. |
+| **Tapping the On/Off toggle does nothing** | The tap probably landed while a refresh was blocking the loop. Tap again. The console prints `Auto refresh on` / `off` for each tap that registers. |
+| **Toggle shows no text** | Your firmware's `M5Button` lacks `set_btn_text()` and the fallback failed. Send me the console line starting with `set_btn_text:`. |
 | **"No Wi-Fi"** | Check your UIFlow2 Wi-Fi settings (2.4 GHz only). The app retries every 15 s. |
 
 ## Security
@@ -226,6 +242,7 @@ If something fails, the console prints a full traceback. Paste it here, starting
 - The Pick screen only offers preset symbols. Change `SYMBOL_GROUPS` to add your own, or add symbols from Claude or Postman, and they'll appear on the **Other** tab.
 - The Other tab shows up to 24 symbols. With more, the last slot shows "+N more".
 - Taps are ignored while a request is in flight, because the loop is blocked. Buttons already queued keep going.
+- The auto-refresh setting isn't saved; it resets to `AUTO_REFRESH` on every restart. It could be stored in NVS.
 - The Watchlist screen shows the time until the next refresh, not the quote timestamp. The server's reply has no timestamp, and the app doesn't sync a clock.
 - `Name` (e.g. "Apple Inc") is in the reply but isn't displayed, for lack of room. A detail screen could show it.
 - Ideas: light StackChan's LEDs green or red with the day's overall move, nod when a symbol moves more than X%, or show a detail screen with the company name and a day chart.
