@@ -1,4 +1,4 @@
-# --- Local copies with your real MCP_URL / MCP_API_KEY (never commit these) ---
+# --- Local copies with your real KEYS (never commit these) ---
 # Keep a filled-in copy next to the repo file, e.g. stock-watchlist.local.py
 *.local.py
 *-local.py
