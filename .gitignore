@@ -1,0 +1,20 @@
+# --- Local copies with your real MCP_URL / MCP_API_KEY (never commit these) ---
+# Keep a filled-in copy next to the repo file, e.g. stock-watchlist.local.py
+*.local.py
+*-local.py
+secrets*.py
+.env
+.env.*
+
+# --- Python / MicroPython build artifacts ---
+__pycache__/
+*.py[cod]
+*.mpy
+
+# --- Editors / OS ---
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
+Thumbs.db
